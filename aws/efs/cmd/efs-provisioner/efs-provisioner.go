@@ -17,6 +17,7 @@ limitations under the License.
 package main
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
@@ -28,15 +29,14 @@ import (
 	"github.com/aws/aws-sdk-go/aws"
 	"github.com/aws/aws-sdk-go/aws/session"
 	"github.com/aws/aws-sdk-go/service/efs"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
 	"k8s.io/klog"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/controller"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/gidallocator"
-	"sigs.k8s.io/sig-storage-lib-external-provisioner/mount"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/v6/controller"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/v6/gidallocator"
+	"sigs.k8s.io/sig-storage-lib-external-provisioner/v6/mount"
 )
 
 const (
@@ -124,9 +124,9 @@ func getMount(dnsName string) (string, string, error) {
 var _ controller.Provisioner = &efsProvisioner{}
 
 // Provision creates a storage asset and returns a PV object representing it.
-func (p *efsProvisioner) Provision(options controller.ProvisionOptions) (*v1.PersistentVolume, error) {
+func (p *efsProvisioner) Provision(ctx context.Context, options controller.ProvisionOptions) (*v1.PersistentVolume, controller.ProvisioningState, error) {
 	if options.PVC.Spec.Selector != nil {
-		return nil, fmt.Errorf("claim.Spec.Selector is not supported")
+		return nil, controller.ProvisioningFinished, fmt.Errorf("claim.Spec.Selector is not supported")
 	}
 
 	gidAllocate := true
@@ -139,7 +139,7 @@ func (p *efsProvisioner) Provision(options controller.ProvisionOptions) (*v1.Per
 		case "gidallocate":
 			b, err := strconv.ParseBool(v)
 			if err != nil {
-				return nil, fmt.Errorf("invalid value %s for parameter %s: %v", v, k, err)
+				return nil, controller.ProvisioningFinished, fmt.Errorf("invalid value %s for parameter %s: %v", v, k, err)
 			}
 			gidAllocate = b
 		}
@@ -149,14 +149,14 @@ func (p *efsProvisioner) Provision(options controller.ProvisionOptions) (*v1.Per
 	if gidAllocate {
 		allocate, err := p.allocator.AllocateNext(options)
 		if err != nil {
-			return nil, err
+			return nil, controller.ProvisioningFinished, err
 		}
 		gid = &allocate
 	}
 
 	err := p.createVolume(p.getLocalPath(options), gid)
 	if err != nil {
-		return nil, err
+		return nil, controller.ProvisioningFinished, err
 	}
 
 	mountOptions := []string{"vers=4.1"}
@@ -191,7 +191,7 @@ func (p *efsProvisioner) Provision(options controller.ProvisionOptions) (*v1.Per
 		}
 	}
 
-	return pv, nil
+	return pv, controller.ProvisioningFinished, nil
 }
 
 func (p *efsProvisioner) createVolume(path string, gid *int) error {
@@ -237,7 +237,7 @@ func (p *efsProvisioner) getDirectoryName(options controller.ProvisionOptions) s
 
 // Delete removes the storage asset that was created by Provision represented
 // by the given PV.
-func (p *efsProvisioner) Delete(volume *v1.PersistentVolume) error {
+func (p *efsProvisioner) Delete(ctx context.Context, volume *v1.PersistentVolume) error {
 	//TODO ignorederror
 	err := p.allocator.Release(volume)
 	if err != nil {
@@ -311,5 +311,5 @@ func main() {
 		serverVersion.GitVersion,
 	)
 
-	pc.Run(wait.NeverStop)
+	pc.Run(context.Background())
 }
